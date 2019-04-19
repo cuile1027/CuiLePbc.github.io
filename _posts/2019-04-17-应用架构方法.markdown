@@ -28,6 +28,317 @@ categories: Android,架构
 本部分是官方的一个端到端用例示例。
 假设我们要构建一个用于显示个人资料的界面。我们将使用私有后端和REST API获取给定个人资料的数据。
 #### 概述
+如下图，显示了设计应用后，所有模块应该如何交互：
+![](https://developer.android.google.cn/topic/libraries/architecture/images/final-architecture.png) 
+需注意，每一级模块仅依赖其下一级的组件，例如，Activity和Fragment仅依赖于视图模型（ViewModel）。存储区（Repository）是唯一一个依赖于其他多个类的类；在本例中，存储区依赖于持久性数据模型（Model）和远程后端数据源（Remote Data Source）。
+无论用户是在上次关闭应用几分钟后还是几天后回到应用，都会立即看到应用在本地保留的用户信息，如果此数据已过时，则应用的存储区模块会在后天更新数据。
+#### 构建界面
+界面由Fragment UserProfileFragment及其对应的布局文件user_profile_layout.xml组成。
+要驱动该界面，数据模型需要存储以下数据元素：
+
+- **用户ID**：用户的标识符。一般使用Fragment参数将该信息传递到相应的Fragment中。若进程被操作系统销毁，该信息将保留，下次重启时，ID可用。
+- **用户对象**：用于存储用户详细信息的数据类。
+
+使用UserProfileViewModel（ViewModel架构组件）存储以上信息。
+> ViewModel对象为特定的界面组件（如Activity或Fragment）提供数据，并且包含数据处理业务逻辑，以便与模型进行通信。例如，ViewModel可以调用其他组件来加载数据，还可以转发用户请求来修改数据。
+ViewModel不了解界面组件，因此不受配置更改（如旋转设备时重新创建Activity）的影响。
+
+至此，定义了以下文件：
+
+- user_profile.xml：屏幕的界面布局定义。
+- UserProfileFragment：显示数据的界面控制器。
+``` 
+public class UserProfileViewModel extends ViewModel {
+    private String userId;
+    private User user;
+
+    public void init(String userId) {
+        this.userId = userId;
+    }
+    public User getUser() {
+        return user;
+    }
+}
+```
+ 
+- UserProfileViewModel：准备数据以便在UserProfileFragment中查看，并对用户交互作出响应的类。
+```
+public class UserProfileFragment extends Fragment {
+    private static final String UID_KEY = "uid";
+    private UserProfileViewModel viewModel;
+
+    @Override
+    public void onActivityCreated(@Nullable Bundle savedInstanceState) {
+        super.onActivityCreated(savedInstanceState);
+        String userId = getArguments().getString(UID_KEY);
+        viewModel = ViewModelProviders.of(this).get(UserProfileViewModel.class);
+        viewModel.init(userId);
+    }
+
+    @Override
+    public View onCreateView(LayoutInflater inflater,
+                @Nullable ViewGroup container,
+                @Nullable Bundle savedInstanceState) {
+        return inflater.inflate(R.layout.user_profile, container, false);
+    }
+}
+```
+接下来，需要一种方式，在UserProfileViewModel类中设置字段user后，来通知界面。这里就要使用**LiveData组件**了。
+> LiveData是一种可观察的数据存储器。应用中的其他组件可以使用此存储器来监控对象的更改，无需在它们之间创建明确且严格的依赖路径。LiveData组件还会遵循应用组件（诸如Activity、Fragment、Service）的生命周期状态，并包括清理逻辑，以防止对象泄漏和过多内存消耗。
+
+> ~～* 也可以使用诸如 RxJava 或 Agera 之类的库，但在使用诸如此类的库和方法时，要确保正确处理应用的生命周期。特别是，在相关的 LifecycleOwner 停止时暂停数据流，并在相关的 LifecycleOwner 销毁时销毁这些数据流。还可以添加 android.arch.lifecycle:reactivestreams 软件工件，以将 LiveData 与其他响应流库（如 RxJava2）一起使用。*~～
+
+为了将LiveData纳入应用，现在将UserProfileViewModel中的字段类型更改为LiveData<User>。现在，在更新数据时，会通知UserProfileFragment。（LiveData字段具有生命周期感知能力，当不需要引用时，会自动清理它们。）
+UserProfileViewModel（更新）
+```
+public class UserProfileViewModel extends ViewModel {
+    ...
+    private LiveData<User> user;
+    public LiveData<User> getUser() {
+        return user;
+    }
+}
+```
+UserProfileFragment（更新）
+```
+@Override
+public void onActivityCreated(@Nullable Bundle savedInstanceState) {
+    super.onActivityCreated(savedInstanceState);
+    viewModel.getUser().observe(this, user -> {
+      // Update UI.
+    });
+}
+```
+这样，每次更新用户个人资料数据时，都会调用`onchange()`回调并刷新界面。并不需要替换Fragment的`onStop()``onDestroy()`方法以停止观察数据，LiveData会在Fragment调用生命周期方法时，自动相应处理。
+此外，也不需要任何逻辑来处理配置更改（如屏幕旋转），UserProfileModelView会在配置更改后自动恢复，即一旦重新创建Fragment，它就会接受相同的ViewModel实例，并且会立即用当前数据调用回调。由于[ViewModel生命周期](https://developer.android.google.cn/topic/libraries/architecture/viewmodel.html#the_lifecycle_of_a_viewmodel) 比View存在时间长，所以**ViewModel实现中，不得包含对View对象的直接引用**。
+
+#### 获取数据
+本例中，假定后端提供REST API。使用[Retrofit](http://square.github.io/retrofit/) 库访问后端（也可以使用其他任意网络请求库）。
+与后端通信的WebService定义如下：
+```
+public interface Webservice {
+    /**
+     * @GET declares an HTTP GET request
+     * @Path("user") annotation on the userId parameter marks it as a
+     * replacement for the {user} placeholder in the @GET path
+     */
+    @GET("/users/{user}")
+    Call<User> getUser(@Path("user") String userId);
+}
+```
+如果使用ViewModel直接调用WebService来获取数据，然后分配给LiveData对象，虽然可以实现效果，但是随着应用扩大，应用就会越来越难以维护。这样会给UserProfileViewModel附加太多责任，违背了关注点分离原则。此外，由于ViewModel时间范围和Activity或Fragment关联，意味着当关联界面对象的生命周期结束时，会丢失WebService的数据，此方式会带来不好的用户体验。
+此时，我们建立一个新的模块：存储区，用它来承担数据获取过程。
+> **存储区**模块会处理数据操作。它们会对外提供一个干净的API，以便应用其余部分能够轻松检索该数据。数据更新时，它们直到从何处获取数据以及进行哪些API调用。存储区可被视作不同数据源（如持久性模型、网络服务和缓存）之间的媒介。
+建立UserRepository类使用WebService实例来获取用户数据：
+```
+public class UserRepository {
+    private Webservice webservice;
+    // ...
+    public LiveData<User> getUser(int userId) {
+        // This isn't an optimal implementation. We'll fix it later.
+        final MutableLiveData<User> data = new MutableLiveData<>();
+        webservice.getUser(userId).enqueue(new Callback<User>() {
+            @Override
+            public void onResponse(Call<User> call, Response<User> response) {
+                data.setValue(response.body());
+            }
+
+            // Error case is left out for brevity.
+        });
+        return data;
+    }
+}
+```
+存储区最重要的作用：从应用的其余部分提取数据源。
+>上方的UserRepository需要一个WebService实例才能够获取用户数据。它可以直接创建该实例，但是要做到此，必须直到WebService类的依赖项。此外，UserRepository或许也不是唯一一个需要WebService的类。这种情况我们就要复制代码，因为每个需要引用WebService的类都需要直到如何构造该实例及其依赖项。为每个类都创建一个新的WebService也会使应用非常耗费资源。
+因此，可以用以下设计模式来解决这个问题：
+
+> - 依赖注入(DI)：依赖注入使类能够定义其依赖项而不构造它们。在运行时，另一个类负责提供这些依赖项。建议使用[Dragger2库](https://google.github.io/dagger/) 来实现依赖注入。Dagger 2 通过遍历依赖项树自动构造对象，并为依赖项提供编译时保证。
+- 服务定位器：服务定位器模式提供了一个注册表，类可以从中获取其依赖项而不构造它们。
+
+此示例中，用Dagger2来管理WebService对象的依赖项。
+
+#### 连接ViewModel和存储区
+修改UserProfileViewModel以使用UserRepository对象：
+UserProfileViewModel（更新）
+```
+public class UserProfileViewModel extends ViewModel {
+    private LiveData<User> user;
+    private UserRepository userRepo;
+
+    // Instructs Dagger 2 to provide the UserRepository parameter.
+    @Inject
+    public UserProfileViewModel(UserRepository userRepo) {
+        this.userRepo = userRepo;
+    }
+
+    public void init(int userId) {
+        if (this.user != null) {
+            // ViewModel is created on a per-Fragment basis, so the userId
+            // doesn't change.
+            return;
+        }
+        user = userRepo.getUser(userId);
+    }
+
+    public LiveData<User> getUser() {
+        return this.user;
+    }
+}
+```
+
+#### 缓存数据
+UserRepository实现会抽象化对WebService对象的调用，但由于它只依赖一个数据源，因此不是很灵活。而且UserRepository获取数据后，并未将数据存储在任何地方，因此每当UserProfileFragment重建时，都要重新从后端获取数据。
+鉴于此问题，现在向UserRepository添加一个新数据源，用于将User对象缓存其中：
+UserRepository（更新）
+```
+// Informs Dagger that this class should be constructed only once.
+@Singleton
+public class UserRepository {
+    private Webservice webservice;
+
+    // Simple in-memory cache. Details omitted for brevity.
+    private UserCache userCache;
+
+    public LiveData<User> getUser(int userId) {
+        LiveData<User> cached = userCache.get(userId);
+        if (cached != null) {
+            return cached;
+        }
+
+        final MutableLiveData<User> data = new MutableLiveData<>();
+        userCache.put(userId, data);
+
+        // This implementation is still suboptimal but better than before.
+        // A complete implementation also handles error cases.
+        webservice.getUser(userId).enqueue(new Callback<User>() {
+            @Override
+            public void onResponse(Call<User> call, Response<User> response) {
+                data.setValue(response.body());
+            }
+        });
+        return data;
+    }
+}
+```
+
+#### 保留数据
+至此，如果用户旋转设备或者离开后立即返回应用，现有界面会立即变为可见，因为内存中有缓存数据。但是当用户彻底离开应用一段时间，再次回来时，又会重新从网络获取数据，浪费了资源。
+可以通过缓存网络请求的方式来解决以上问题。但这样做会带来一个值得关注的新问题：如果相同的用户数据因另一种类型的请求（如获取好友列表）而显示出来，会发生什么？应用将会显示不一致的数据，这样比较容易让用户感到困惑。例如，如果用户在不同的时间发出好友列表请求和单一用户请求，应用可能会显示同一用户的数据的两个不同版本。应用将需要弄清楚如何合并这些不一致的数据。
+
+处理这种问题最佳方法就是使用持久性模型。此处，使用[Room持久库](https://developer.android.google.cn/training/data-storage/room/index.html)来实现。
+> Room是一个对象映射库，可以利用最少的样板代码实现本地数据持久性。在编译时，它会根据数据架构验证每个查询，这样损坏的 SQL 查询会导致编译时错误而不是运行时失败。Room 可以抽象化处理原始 SQL 表格和查询的一些底层实现细节。它还允许您观察对数据库数据（包括集合和连接查询）的更改，并使用 LiveData 对象公开这类更改。它甚至明确定义了解决一些常见线程问题（如访问主线程上的存储空间）的执行约束。
+
+使用Room时，要先定义本地架构。首先，向User数据模型添加@Entity注解，并向该类的id字段添加@PrimaryKey注解。这些注解将会把User标记为数据库中的表格，并将id标记为该表格的主键。
+User 
+```
+@Entity
+class User {
+  @PrimaryKey
+  private int id;
+  private String name;
+  private String lastName;
+
+  // Getters and setters for fields.
+}
+```
+然后，通过为应用实现RoomDatabase来创建一个数据库类：
+UserDatabase	
+```
+@Database(entities = {User.class}, version = 1)
+public abstract class UserDatabase extends RoomDatabase {
+}
+```
+> 注意，UserDatabase是一个抽象类，Room将会自动提供它的实现。
+
+接下来，需要使用数据访问对象（DAO）来将用户数据插入数据库：
+UserDao
+```
+@Dao
+public interface UserDao {
+    @Insert(onConflict = REPLACE)
+    void save(User user);
+    @Query("SELECT * FROM user WHERE id = :userId")
+    LiveData<User> load(int userId);
+}
+```
+注意，load方法将返回一个LiveData<User>类型的对象，当数据发生更改时，会自动通知所有活跃的观察者。仅当至少有一个活跃观察者时，它才会更新数据。
+定义了UserDao类之后，从数据库类引用该DAO：
+UserDatabase
+```
+@Database(entities = {User.class}, version = 1)
+public abstract class UserDatabase extends RoomDatabase {
+    public abstract UserDao userDao();
+}
+```
+现在，就可以修改UserRepository以纳入Room数据源：
+```
+@Singleton
+public class UserRepository {
+    private final Webservice webservice;
+    private final UserDao userDao;
+    private final Executor executor;
+
+    @Inject
+    public UserRepository(Webservice webservice, UserDao userDao, Executor executor) {
+        this.webservice = webservice;
+        this.userDao = userDao;
+        this.executor = executor;
+    }
+
+    public LiveData<User> getUser(String userId) {
+        refreshUser(userId);
+        // Returns a LiveData object directly from the database.
+        return userDao.load(userId);
+    }
+
+    private void refreshUser(final String userId) {
+        // Runs in a background thread.
+        executor.execute(() -> {
+            // Check if user data was fetched recently.
+            boolean userExists = userDao.hasUser(FRESH_TIMEOUT);
+            if (!userExists) {
+                // Refreshes the data.
+                Response<User> response = webservice.getUser(userId).execute();
+
+                // Check for errors here.
+
+                // Updates the database. The LiveData object automatically
+                // refreshes, so we don't need to do anything else here.
+                userDao.save(response.body());
+            }
+        });
+    }
+}
+```
+虽然，我们在UserRepository中修改了数据源，但不需要更改UserProfileViewModel或者UserProfileFragment。这说明了我们的架构比较正确。
+当然，如果用户过几天后再返回此架构的应用，他们可能会看到过时的数据，直到存储区可以获取更新的信息。可以使用显示占位符数据，来显示虚拟值，并指示应用正在获取并加载最新信息。
+
+**单一可信来源**：不同的REST API端点经常可能会返回同样的数据，例如，如果我们的后端有其他端点返回好友列表，则同一个用户对象可能来自两个不同的 API 端点，甚至可能使用不同的粒度级别。如果 UserRepository 按原样从 Webservice 请求返回响应，而不检查一致性，则界面可能会显示混乱的信息，因为来自存储区的数据的版本和格式将取决于最近调用的端点。
+因此，我们的 UserRepository 实现会将网络服务响应保存在数据库中。这样一来，对数据库的更改将触发对活跃 LiveData 对象的回调。使用此模型时，**数据库会充当单一可信来源**，应用的其他部分则使用 UserRepository 对其进行访问。无论是否使用磁盘缓存，存储区应该将某个数据源指定为应用其余部分的单一可信来源。
+
+#### 显示正在执行的操作
+界面应该向用户显示当前正在执行的某项网络操作之类的后台操作。可以采取如下策略，在界面中显示一致的数据更新状态（无论数据更新请求来自哪里）：
+
+- 更改getUser()以返回一个LiveData类型的对象。此对象包含网络操作的状态。可参见·[NetworkBoundResource](https://github.com/googlesamples/android-architecture-components/blob/88747993139224a4bb6dbe985adf652d557de621/GithubBrowserSample/app/src/main/java/com/android/example/github/repository/NetworkBoundResource.kt)
+- 在UserRepository类中再提供一个可以返回User刷新状态的公共函数。如果只是想在数据获取过程源自用户显式操作（例如下拉刷新）时，在界面中显示网络状态，使用此策略效果会更好。
+
+#### 测试每个组件
+如果做到了**分离关注点**原则，应用各部分可测试性就会得以体现。
+以下是各部分简要测试方法：
+
+- **界面和交互**：使用[Android界面插桩测试](https://developer.android.google.cn/training/testing/unit-testing/instrumented-unit-tests.html) 。创建此测试最好使用[Espresso](https://developer.android.google.cn/training/testing/ui-testing/espresso-testing.html) 库。可以创建Fragment并为其提供模拟UserProfileViewModel。由于Fragment只与UserProfileViewModel通信，因此模拟这一个类足够完整测试应用的界面。
+- **ViewModel**：可以使用[JUnit测试](https://developer.android.google.cn/training/testing/unit-testing/local-unit-tests.html) 来测试UserProfileViewModel类。只需模拟UserRepository这一个类即可。
+- **UserRepository**：也可以使用JUnit测试来测试。需要模拟WebService和UserDao。需验证：
+1. 存储区是否进行了正确的网络服务调用。
+2. 存储区是否将结果保存到数据库中。
+3. 在数据已经缓存且保持最新状态时，存储区会不会发出不必要请求。
+- **UserDao**：使用插桩测试来测试DAO类。对于每个测试，都应创建内存中数据库以确保测试没有任何副作用（例如更改磁盘上的数据库文件）。
+- **WebService**：在所有测试过程中，都应该避免对后端进行网络调用。所有测试（尤其是基于网络的测试）都务必独立于外界。
+可以使用一些库（包括[MockWebServer](https://github.com/square/okhttp/tree/master/mockwebserver) 来建立虚假本地服务器帮助测试。
+- **测试软件工作**：架构组件提供了一个可控制其后台线程的maven软件工作。android.arch.core:core-testing 软件工件包含以下 JUnit 规则：
+1. InstantTaskExecutorRule：使用此规则可立即在调用线程上执行任何后台操作。
+2. CountingTaskExecutorRule：使用此规则可等待架构组件的后台操作。您还可以将此规则作为空闲资源与 Espresso 关联。
 
 ### 最佳做法
 - **避免将应用的入口点（如Activity、Service、广播接收器）指定为数据源**
