@@ -11,8 +11,8 @@ categories: Soft Design,Base
 ### [计算机系统基础](https://mubu.com/doc/c_uQa8joXr) 
 ### [程序设计语言基础](https://mubu.com/doc/pMCMGjRrLr) 
 ### [数据结构](https://mubu.com/doc/iHhrkqTynr) 
-### [操作系统知识（未完）](https://mubu.com/doc/vOrm8_2PFr) 
-### 软件工程基础知识
+### [操作系统知识](https://mubu.com/doc/vOrm8_2PFr) 
+### [软件工程基础知识](https://mubu.com/doc/jgZe6FQgVr)
 ### 结构化开发方法
 ### 面向对象技术
 ### 算法设计与分析
