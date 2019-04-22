@@ -153,7 +153,7 @@ public class UserRepository {
 >上方的UserRepository需要一个WebService实例才能够获取用户数据。它可以直接创建该实例，但是要做到此，必须直到WebService类的依赖项。此外，UserRepository或许也不是唯一一个需要WebService的类。这种情况我们就要复制代码，因为每个需要引用WebService的类都需要直到如何构造该实例及其依赖项。为每个类都创建一个新的WebService也会使应用非常耗费资源。
 因此，可以用以下设计模式来解决这个问题：
 
-> - 依赖注入(DI)：依赖注入使类能够定义其依赖项而不构造它们。在运行时，另一个类负责提供这些依赖项。建议使用[Dragger2库](https://google.github.io/dagger/) 来实现依赖注入。Dagger 2 通过遍历依赖项树自动构造对象，并为依赖项提供编译时保证。
+> - 依赖注入(DI)：依赖注入使类能够定义其依赖项而不构造它们。在运行时，另一个类负责提供这些依赖项。建议使用[Dragger2库](https://google.github.io/dagger/) 来实现依赖注入。Dagger 2 通过遍历依赖项树自动构造对象，并为依赖项提供编译时保证。最近发现了一个kotlin依赖注入库：[koin](https://github.com/InsertKoinIO/koin)，使用纯kotlin的话可以尝试使用此库。
 - 服务定位器：服务定位器模式提供了一个注册表，类可以从中获取其依赖项而不构造它们。
 
 此示例中，用Dagger2来管理WebService对象的依赖项。
