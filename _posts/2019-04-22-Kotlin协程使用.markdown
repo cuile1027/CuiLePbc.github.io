@@ -31,4 +31,421 @@ fun preparePostAsync(): Promise<Token> {
 ```
 但是，此异步方式属于链式调用组合模型，自上而下的命令式方法（如循环、异常处理等）均无效。此方式必须返回Promises对象，异常处理也比较复杂。
 
-- 响应式扩展：
+- 响应式扩展：将数据视为流，并且可观察到这些流，全新的编程视角，很好处理了错误。
+- **协程**：函数可被暂时挂起的一种处理异步方法。阻塞和非阻塞代码基本相同。可以使用循环、异常等处理。并且平台无关。
+
+### 协程基础
+#### 创建一个协程
+```
+import kotlinx.coroutines.*
+
+fun main() {
+    GlobalScope.launch { // 在后台启动一个新的协程并继续
+        delay(1000L) // 非阻塞的等待 1 秒钟（默认时间单位是毫秒）
+        println("World!") // 在延迟后打印输出
+    }
+    println("Hello,") // 协程已在等待时主线程还在继续
+    Thread.sleep(2000L) // 阻塞主线程 2 秒钟来保证 JVM 存活
+}
+```
+上面的`GlobalScope`是CoroutineScope上下文的一种，表示这个协程会在全局生效，直到整个main函数执行结束才会取消。会是一个顶层协程。`launch`构建器即可简单构建一个非阻塞的协程。`delay()`表示非阻塞性地挂起协程，只能在挂起函数（`suspend`关键字修饰）或者创建的协程中使用。
+
+#### 阻塞与非阻塞
+```
+import kotlinx.coroutines.*
+
+fun main() {
+    GlobalScope.launch { // 在后台启动一个新的协程并继续
+        delay(1000L)
+        println("World!")
+    }
+    println("Hello,") // 主线程中的代码会立即执行
+    runBlocking {     // 但是这个表达式阻塞了主线程
+        delay(2000L)  // ……我们延迟 2 秒来保证 JVM 的存活
+    } 
+}
+```
+上面的 `runBlocking{}`建立一个阻塞性协程，调用了该代码块的线程会被阻塞，直到代码块内部的协程执行完毕。但是一般更习惯使用下面的写法：
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking<Unit> { // 开始执行主协程
+    GlobalScope.launch { // 在后台启动一个新的协程并继续
+        delay(1000L)
+        println("World!")
+    }
+    println("Hello,") // 主协程在这里会立即执行
+    delay(2000L)      // 延迟 2 秒来保证 JVM 存活
+}
+```
+这里，`runBlocking<Unit> { …… }`作为用来启动主协程的适配器，显式指定了其返回类型`Unit`，因为`main`函数必须返回`Unit`类型。
+一般为挂起函数（`suspend`关键字修饰）编写单元测试的一种方式：
+```
+class MyTest {
+    @Test
+    fun testMySuspendingFunction() = runBlocking<Unit> {
+        // 这里我们可以使用任何喜欢的断言风格来使用挂起函数
+    }
+}
+```
+#### 等待一个作业
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    val job = GlobalScope.launch { // 启动一个新协程并保持对这个作业的引用
+        delay(1000L)
+        println("World!")
+    }
+    println("Hello,")
+    job.join() // 等待直到子协程执行结束
+}
+```
+显式并且非阻塞方式等待所启动的后台job执行结束，使用`join()`方法。
+#### 结构化并发
+`GlobalScope.launch`会创建一个顶层协程，必须手动保持对其创建的协程的应用，并且`join()`它，容易出错。
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking { // this: CoroutineScope
+    launch { // 在 runBlocking 作用域中启动一个新协程
+        delay(1000L)
+        println("World!")
+    }
+    println("Hello,")
+}
+```
+这里，使用`launch{}`直接创建了一个`runBlocking`作用域中的子协程，这样就不需要显式`join()`子协程了，外部协程（即上面的`runBlocking`）一直会等待其内部的所有协程都执行完毕，才会结束。
+#### 作用域构建器
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking { // this: CoroutineScope
+    launch { 
+        delay(200L)
+        println("Task from runBlocking")
+    }
+    
+    coroutineScope { // 创建一个协程作用域
+        launch {
+            delay(500L) 
+            println("Task from nested launch")
+        }
+    
+        delay(100L)
+        println("Task from coroutine scope") // 这一行会在内嵌 launch 之前输出
+    }
+    
+    println("Coroutine scope is over") // 这一行在内嵌 launch 执行完毕后才输出
+}
+```
+除过使用不同的构建器提供协程作用域以外，还可以使用`coroutineScpoe{}`构建器声明自己的作用域。它会创建一个协程作用域，并且在所有子协程全部执行完毕前不会结束。上面代码中的`runBlocking`和`coroutineScope`主要区别是，后者在等待所有子协程执行完毕时，不会阻塞当前线程。
+#### 协程内调用函数
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    launch { doWorld() }
+    println("Hello,")
+}
+
+// 这是你的第一个挂起函数
+suspend fun doWorld() {
+    delay(1000L)
+    println("World!")
+}
+```
+`suspend`关键字修饰的函数是挂起函数，必须在协程中被调用，挂起函数中也能够使用`delay()`等其他挂起函数。
+但是需要考虑，挂起函数中，包含一个在当前作用域中调用的协程构建器的话，惯用的方案是要么显式将 CoroutineScope 作为包含该函数的类的一个字段， 要么当外部类实现了 CoroutineScope 时隐式取得。*最后手段，可以使用`CoroutineScope(coroutineContext)`，但是因为不能控制该方法执行的作用域，所以此方法不安全，一般只能在私有API中使用。*
+#### 全局协程像守护线程
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    GlobalScope.launch {
+        repeat(1000) { i ->
+                println("I'm sleeping $i ...")
+            delay(500L)
+        }
+    }
+    delay(1300L) // 在延迟后退出
+}
+```
+上面代码中，`GlobalScope`中运行了一个长期运行，每秒打印两个数字的协程。但是当主函数延迟1.3秒后退出时，`GlobalScope`也终止了。说明，`GlobalScope`中启动的活动协程并不会使进程保活，就如同守护线程一样。
+### 协程的取消与超时
+#### 取消协程的执行
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    val job = launch {
+        repeat(1000) { i ->
+                println("I'm sleeping $i ...")
+            delay(500L)
+        }
+    }
+    delay(1300L) // 延迟一段时间
+    println("main: I'm tired of waiting!")
+    job.cancel() // 取消该任务
+    job.join() // 等待任务执行结束
+    println("main: Now I can quit.")
+}
+```
+`launch`函数会返回一个job对象，可以使用此对象取消运行中的协程。可以使用`cancelAndJoin()`函数代替上面两个函数。
+#### 取消是协作的
+协程的取消是协作的，一段代码必须是协作的才能被取消。所有`kotlinx.coroutines`中的挂起函数都能被取消。它们会检查协程的取消，并在取消时抛出` CancellationException`。如果协程正在执行计算任务，并没有检查取消的话，那么它就不能被取消。
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    val startTime = System.currentTimeMillis()
+    val job = launch(Dispatchers.Default) {
+        var nextPrintTime = startTime
+        var i = 0
+        while (i < 5) { // 一个执行计算的循环，只是为了占用 CPU
+            // 每秒打印消息两次
+            if (System.currentTimeMillis() >= nextPrintTime) {
+                println("I'm sleeping ${i++} ...")
+                nextPrintTime += 500L
+            }
+        }
+    }
+    delay(1300L) // 等待一段时间
+    println("main: I'm tired of waiting!")
+    job.cancelAndJoin() // 取消一个任务并且等待它结束
+    println("main: Now I can quit.")
+}
+```
+上面的子协程，取消后还在执行。
+#### 使计算代码可取消
+两种方法：第一种是定期调用挂起函数来检查取消。`yield`是比较好的选择。第二种是显式检查取消状态。
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    val startTime = System.currentTimeMillis()
+    val job = launch(Dispatchers.Default) {
+        var nextPrintTime = startTime
+        var i = 0
+        while (isActive) { // 可以被取消的计算循环
+            // 每秒打印消息两次
+            if (System.currentTimeMillis() >= nextPrintTime) {
+                println("I'm sleeping ${i++} ...")
+                nextPrintTime += 500L
+            }
+        }
+    }
+    delay(1300L) // 等待一段时间
+    println("main: I'm tired of waiting!")
+    job.cancelAndJoin() // 取消该任务并等待它结束
+    println("main: Now I can quit.")
+}
+```
+上面使用了`isActive`来显示判断取消状态。该属性是`CoroutineScope `的一个扩展属性。
+#### 在finally中释放资源
+通常使用如下的方法处理在被取消时抛出 CancellationException 的可被取消的挂起函数。比如说，`try {……} finally {……} `表达式以及 Kotlin 的 `use `函数一般在协程被取消的时候执行它们的终结动作：
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    val job = launch {
+        try {
+            repeat(1000) { i ->
+                    println("I'm sleeping $i ...")
+                delay(500L)
+            }
+        } finally {
+            println("I'm running finally")
+        }
+    }
+    delay(1300L) // 延迟一段时间
+    println("main: I'm tired of waiting!")
+    job.cancelAndJoin() // 取消该任务并且等待它结束
+    println("main: Now I can quit.")
+}
+```
+#### 运行不能被取消的代码块
+上一个例子中，若是中`finally`中调用挂起函数都会抛出`CancellationException`，因为持续运行的代码是会被取消的。通常，良好的关闭操作一般不会调用挂起函数。但是，需要挂起一个被取消的协程，你可以将相应的代码包装在 withContext(NonCancellable) {……} 中，并使用 withContext 函数以及 NonCancellable 上下文，见如下示例所示：
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    val job = launch {
+        try {
+            repeat(1000) { i ->
+                    println("I'm sleeping $i ...")
+                delay(500L)
+            }
+        } finally {
+            withContext(NonCancellable) {
+                println("I'm running finally")
+                delay(1000L)
+                println("And I've just delayed for 1 sec because I'm non-cancellable")
+            }
+        }
+    }
+    delay(1300L) // 延迟一段时间
+    println("main: I'm tired of waiting!")
+    job.cancelAndJoin() // 取消该任务并等待它结束
+    println("main: Now I can quit.")
+}
+```
+#### 超时
+大多时候，取消一个协程是由于它可能会超时，可以用`withTimeout`函数来代替上面的手动追踪。
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    withTimeout(1300L) {
+        repeat(1000) { i ->
+                println("I'm sleeping $i ...")
+            delay(500L)
+        }
+    }
+}
+```
+上面代码的`withTimeout`函数会在超时时间到的时候，抛出一个`TimeoutCancellationException`，并取消协程的运行。如果需要做一些各类使用超时的特别的额外操作，可以使用类似 `withTimeout `的 `withTimeoutOrNull `函数，并把这些会超时的代码包装在 `try {...} catch (e: TimeoutCancellationException) {...} `代码块中，而 `withTimeoutOrNull `通过返回 `null `来进行超时操作，从而替代抛出一个异常：
+```
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    val result = withTimeoutOrNull(1300L) {
+        repeat(1000) { i ->
+                println("I'm sleeping $i ...")
+            delay(500L)
+        }
+        "Done" // 在它运行得到结果之前取消它
+    }
+    println("Result is $result")
+}
+```
+### 通道
+延迟的值使得单个值在多个协程之间互相传输。通道则提供了一种在流中传输值的方法。
+#### 通道基础使用
+`Channel`是一个和`BlockingQueue`十分相似的概念。它代替了阻塞的`put`操作提供了挂起的`sent`，代替了阻塞的`take`并提供了挂起的`receive`。
+```
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.*
+
+fun main() = runBlocking {
+    val channel = Channel<Int>()
+    launch {
+        // 这里可能是消耗大量 CPU 运算的异步逻辑，我们将仅仅做 5 次整数的平方并发送
+        for (x in 1..5) channel.send(x * x)
+    }
+    // 这里我们打印了 5 次被接收的整数：
+    repeat(5) { println(channel.receive()) }
+    println("Done!")
+}
+```
+#### 关闭和迭代通道
+和队列不同的是，一个通道可以被关闭，表示不会再有元素进入。接受这可以定期用`for`循环从通道中接收元素。
+一个`close`操作就像是向通道发送了一个特殊的关闭指令。这个迭代停止，就说明关闭指令已经被接收了。所以必须保证所有先前发出的元素都在通道被关闭前被接收到。
+```
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.*
+
+fun main() = runBlocking {
+    val channel = Channel<Int>()
+    launch {
+        for (x in 1..5) channel.send(x * x)
+        channel.close() // 我们结束发送
+    }
+    // 这里我们使用 `for` 循环来打印所有被接收到的元素（直到通道被关闭）
+    for (y in channel) println(y)
+    println("Done!")
+}
+```
+#### 构建通道生产者
+协程生成一系列元素就相当与生产者--消费者模式的生产者，虽然可以将生产者抽象成一个函数，使用通道作为它的参数，但是这和必须从函数中返回结果的常识不相符。
+Kotlin库提供了一个名为`produce`的协程构建器。我们可以使用它很容易地构建生产端，并且可以使用扩展函数`consumeEach`在消费段替代`for`循环：
+```
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.*
+
+fun CoroutineScope.produceSquares(): ReceiveChannel<Int> = produce {
+    for (x in 1..5) send(x * x)
+}
+
+fun main() = runBlocking {
+    val squares = produceSquares()
+    squares.consumeEach { println(it) }
+    println("Done!")
+}
+```
+#### 管道
+管道是一种一个协程在流中开始生产可能无穷多个元素的模式：
+```
+fun CoroutineScope.produceNumbers() = produce<Int> {
+    var x = 1
+    while (true) send(x++) // 在流中开始从 1 生产无穷多个整数
+}
+```
+并且另一个或多个协程开始消费这些流，做一些操作，并产生了一些额外的结果。如下例子中做了平方处理：
+```
+fun CoroutineScope.square(numbers: ReceiveChannel<Int>): ReceiveChannel<Int> = produce {
+    for (x in numbers) send(x * x)
+}
+```
+用主要代码启动并连接了整个代码：
+```
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.*
+
+fun main() = runBlocking {
+    val numbers = produceNumbers() // 从 1 开始生产整数
+    val squares = square(numbers) // 对整数做平方
+    for (i in 1..5) println(squares.receive()) // 打印前 5 个数字
+    println("Done!") // 我们的操作已经结束了
+    coroutineContext.cancelChildren() // 取消子协程
+}
+
+fun CoroutineScope.produceNumbers() = produce<Int> {
+    var x = 1
+    while (true) send(x++) // 从 1 开始的无限的整数流
+}
+
+fun CoroutineScope.square(numbers: ReceiveChannel<Int>): ReceiveChannel<Int> = produce {
+    for (x in numbers) send(x * x)
+}
+```
+#### 使用管道寻找素数
+第一步，先开启一个生产数字的无线序列管道：
+```
+fun CoroutineScope.numbersFrom(start: Int) = produce<Int> {
+    var x = start
+    while (true) send(x++) // 开启了一个无限的整数流
+}
+```
+第二步，过滤来源于流中的数字，删除了所有可被给定素数整除的数字：
+```
+fun CoroutineScope.filter(numbers: ReceiveChannel<Int>, prime: Int) = produce<Int> {
+    for (x in numbers) if (x % prime != 0) send(x)
+}
+```
+第三步，开启一个从2开始的数字流管道，在主线程的上下文中，运行整个管道，直到所有协程都被启动完成。不必显式保存每个启动的协程，可以使用`cancelChildren`扩展函数来取消所有所有子协程。
+```
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.*
+
+fun main() = runBlocking {
+    var cur = numbersFrom(2)
+    for (i in 1..10) {
+        val prime = cur.receive()
+        println(prime)
+        cur = filter(cur, prime)
+    }
+    coroutineContext.cancelChildren() // 取消所有的子协程来让主协程结束    
+}
+
+fun CoroutineScope.numbersFrom(start: Int) = produce<Int> {
+    var x = start
+    while (true) send(x++) // 从 start 开始过滤整数流
+}
+
+fun CoroutineScope.filter(numbers: ReceiveChannel<Int>, prime: Int) = produce<Int> {
+    for (x in numbers) if (x % prime != 0) send(x)
+}
+```
+注意，可以在标准库中使用 `iterator `协程构建器来构建一个相似的管道。 使用 `iterator `替换 `produce`、`yield `替换 `send`、`next `替换` receive`、 `Iterator `替换 `ReceiveChannel `来摆脱协程作用域，将不再需要 `runBlocking`。 然而，如上所示，如果在` Dispatchers.Default `上下文中运行它，使用通道的管道的好处在于它可以充分利用多核心 CPU。
+不过，这是一种非常不切实际的寻找素数的方法。在实践中，管道调用了另外的一些挂起中的调用（就像异步调用远程服务）并且这些管道不能内置使用 `sequence/iterator`，因为它们不被允许随意的挂起，不像 `produce `是完全异步的。
