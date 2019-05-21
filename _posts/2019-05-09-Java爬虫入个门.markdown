@@ -6,7 +6,9 @@ categories: Java,Kotlin,WebMagic,sql
 ---
 
 ## Java爬虫
-### 我理解的爬虫结构
+
+### 一、我理解的爬虫结构
+
 #### 网页请求
 
 如果要爬取一个网站，首先就得向她发送请求，让她把你需要的数据反馈回来。这就需要一个模块，来模拟请求，然后下载网站返回的网页数据。Java中，最简单基础的此类工具便是[Apache HttpClient](http://hc.apache.org/index.html) 了。当然还有一些封装的其余轮子。最终目的就是让网站服务器将我们要的网页发送给我们。由于只是初步了解爬虫，此环节，我想到的难点有两个吧：
@@ -30,4 +32,97 @@ categories: Java,Kotlin,WebMagic,sql
 
 上面四部分互相协作，就构成了一个简单的爬虫程序，但是还是需要使用一定的设计模式，将他们有机结合在一起，方便扩展。而且抓取数据过程的线程使用控制、启动暂停、爬取过程监控等功能也需要一个模块来协调。至此，一个基本完整的简单爬虫就成型了，至于一些分布式等处理，就暂且不议了。（其实不会）
 
-### 造好的轮子
+### 二、造好的轮子
+
+经过仔细筛选（其实就是在GitHub找了找Star最多，挑出了文档最亲民的一个项目），决定使用Webmagic作为爬虫框架。此项目结构就是上文所说的四大部分，具体的说明参见其[说明文档](http://webmagic.io/docs/zh/) 。下面说说几点自己在使用过程中遇到的几点注意事项吧。
+
+#### 引入
+
+是想做个有界面的爬虫小程序的，就选用了好久没用的[JavaFX](https://openjfx.io/) ,使用glade或者maven引入WebMagic的依赖之后，试运行程序，总会出现程序运行各种报错，JavaFX的一系列类均找不到，开始还以为是WebMagic依赖的JDK版本和JavaFX依赖的JDK版本冲突，各种分离WebMagic依赖都不管用。后来才发现，自己电脑更新JDK版本到了JDK12，虽然JavaFX在大于等于JDK11的环境均可运行，但是由于自己使用了[TornadoFX](https://tornadofx.io/) 库来支持Kotlin使用JavaFX（使用了Kotlin之后就回不去了...），而TornadoFX最新版本1.7.19目前最高支持JDK8的环境。更改了项目的JDK版本之后终于成功跑起来了应用。
+
+#### 日志级别
+
+```
+log4j:WARN No appenders could be found for logger (us.codecraft.webmagic.scheduler.QueueScheduler).
+log4j:WARN Please initialize the log4j system properly.
+log4j:WARN See http://logging.apache.org/log4j/1.2/faq.html#noconfig for more info.
+```
+在其他使用log4j的地方也遇到了这个问题，说的是log4j未被正确配置好，虽然不是很影响后续使用，但是每次运行，总会跳出来摆在这儿，而且很多框架中运行日志也无法看到。所以在运行WebMagic爬虫程序第一步，应该先进行log4j的简单配置：
+##### 1. 直接使用默认配置
+`BasicConfigurator.configure ()`。
+##### 2. 读取使用[Java的配置文件](https://zh.wikipedia.org/wiki/.properties) 
+`PropertyConfigurator.configure(String configFilename)`,配置文件举例如下
+
+日志输出到控制台：
+```
+# Root logger
+log4j.rootLogger=INFO, console
+ 
+log4j.appender.console=org.apache.log4j.ConsoleAppender
+log4j.appender.console.Target=System.out
+log4j.appender.console.layout=org.apache.log4j.PatternLayout
+log4j.appender.consoleAppender.layout.ConversionPattern=[%t] %-5p %c %x - %m%n
+```
+输出到文件：
+```
+# Root logger
+log4j.rootLogger=INFO, file
+ 
+# Direct log messages to a log file
+log4j.appender.file=org.apache.log4j.RollingFileAppender
+ 
+log4j.appender.file.File=C:\\temp\info.log
+log4j.appender.file.MaxFileSize=10MB
+log4j.appender.file.MaxBackupIndex=10
+log4j.appender.file.layout=org.apache.log4j.PatternLayout
+log4j.appender.file.layout.ConversionPattern=[%t] %-5p %c %x - %m%n
+```
+##### 3. 读取XML形式的配置文件
+`DOMConfigurator.configure(String filename)`,配置文件举例如下：
+
+输出到控制台：
+```
+<!DOCTYPE log4j:configuration SYSTEM "log4j.dtd">
+<log4j:configuration debug="true" xmlns:log4j='http://jakarta.apache.org/log4j/'>
+
+  <appender name="console" class="org.apache.log4j.ConsoleAppender">
+    <param name="Target" value="System.out"/>
+    <layout class="org.apache.log4j.PatternLayout">
+    <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n" />
+    </layout>
+  </appender>
+
+  <root>
+    <priority value ="debug"></priority>
+    <appender-ref ref="console"></appender>
+  </root>
+
+</log4j:configuration>
+```
+输出到文件：
+```
+<!DOCTYPE log4j:configuration SYSTEM "log4j.dtd">
+<log4j:configuration debug="true" xmlns:log4j='http://jakarta.apache.org/log4j/'>
+
+  <appender name="fileAppender" class="org.apache.log4j.RollingFileAppender">
+    <param name="File" value="demoApplication.log"/>
+    <layout class="org.apache.log4j.PatternLayout">
+    <param name="ConversionPattern" value="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n" />
+    </layout>
+  </appender>
+
+  <root>
+    <priority value ="debug"></priority>
+    <appender-ref ref="fileAppender"></appender>
+  </root>
+
+</log4j:configuration>
+```
+
+### 抽取网页元素
+这部分是提取网页信息的核心，我在使用过程中，主要用到了xpath和regex两种方式来过滤信息。
+- regex，即正则表达式，需要注意的是，过滤网址等带有特殊符号的字符串时，一定记得符号转义，比如`www.abcdefg.com?id=1111`，这种类型的字符串，其中的？会被当做正则表达式中的特殊符号，来表示是否含有前方的字母`m`。
+- xpath,这是一种[XML路径语言](https://zh.wikipedia.org/wiki/XPath) ，在解析xml时，十分强大。但是需要注意的是，WebMagic中的xpath只是作者基于xpath解析查找方式的一个封装，不具备一些xpath的特性，也添加了一些xpath不具备的特性。详情见[说明文档](http://webmagic.io/docs/zh/posts/ch4-basic-page-processor/xsoup.html) 。
+
+### Selenium使用（待尝试补充）
+爬虫过程中，待抓取页面可能会需要登陆、可能需要js动态渲染，最通用的方式一般是Selenium模拟浏览器的使用。一般需要浏览器驱动，配置到对应文档，然后代码控制模拟浏览器操作，得到Cookie或者最终网页后，再进行页面解析。
